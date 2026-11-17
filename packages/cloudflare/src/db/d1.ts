@@ -182,6 +182,19 @@ export interface RequestScopedDbOpts {
 	url: URL;
 }
 
+/**
+ * Optional hooks for code that wraps this adapter (for example a multi-tenant
+ * database wrapper). Not used by EmDash itself.
+ */
+export interface RequestScopedDbExtras {
+	/**
+	 * Transform the session-backed dialect before the per-request Kysely is built,
+	 * so a wrapper can layer its own dialect (SQL rewriting, logging) on top of
+	 * the session instead of reimplementing sessions, bookmarks and write pinning.
+	 */
+	wrapDialect?: (dialect: Dialect) => Dialect;
+}
+
 export interface RequestScopedDb {
 	/** Per-request Kysely instance backed by a D1 Sessions API session. */
 	db: Kysely<any>;
@@ -381,7 +394,10 @@ function deepErrorMessage(error: unknown): string {
  * request, stashes `db` in ALS for the duration of next(), then invokes
  * `commit()` on the response path.
  */
-export function createRequestScopedDb(opts: RequestScopedDbOpts): RequestScopedDb | null {
+export function createRequestScopedDb(
+	opts: RequestScopedDbOpts,
+	extras?: RequestScopedDbExtras,
+): RequestScopedDb | null {
 	if (!isSessionEnabled(opts.config)) return null;
 	// A session query hung earlier in this isolate's life (see the guard).
 	// Sessions are considered broken here; route everything through the
@@ -440,9 +456,10 @@ export function createRequestScopedDb(opts: RequestScopedDbOpts): RequestScopedD
 	// Coalescing is per-request only by construction: this Kysely (and its
 	// driver buffer) lives for a single request, so there is no cross-request
 	// buffering. The shared singleton from createDialect must never coalesce.
-	const dialect = opts.config.coalesce
+	const sessionDialect = opts.config.coalesce
 		? new CoalescingD1Dialect({ database: sessionAsDatabase })
 		: new EmDashD1Dialect({ database: sessionAsDatabase });
+	const dialect = extras?.wrapDialect ? extras.wrapDialect(sessionDialect) : sessionDialect;
 	const db = new Kysely<any>({
 		dialect,
 		// Kysely measures around the driver call, so per-query metrics still

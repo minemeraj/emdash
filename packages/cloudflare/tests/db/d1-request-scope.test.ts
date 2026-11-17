@@ -1,3 +1,4 @@
+import type { Dialect } from "kysely";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
@@ -141,4 +142,53 @@ describe("D1 request scoping query concurrency", () => {
 			expect(scoped.db.getExecutor().adapter.supportsMultipleConnections).toBe(first > 1);
 		},
 	);
+});
+
+describe("D1 request scoping wrapDialect hook", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mocks.binding.withSession.mockReturnValue(mocks.session);
+	});
+
+	const baseOpts = {
+		config,
+		isAuthenticated: false,
+		isWrite: false,
+		cookies: { get: vi.fn(), set: vi.fn() },
+		url: new URL("https://example.com/"),
+	};
+
+	it("passes the session-backed dialect to wrapDialect and builds the db from its result", () => {
+		let seen: Dialect | undefined;
+		const wrapDialect = vi.fn((d: Dialect): Dialect => {
+			seen = d;
+			return d;
+		});
+		const scoped = createRequestScopedDb(baseOpts, { wrapDialect });
+		expect(scoped).not.toBeNull();
+		expect(wrapDialect).toHaveBeenCalledTimes(1);
+		expect(seen).toBeDefined();
+		// The session was opened, so the dialect handed over sits on a D1 session.
+		expect(mocks.binding.withSession).toHaveBeenCalledWith("first-unconstrained");
+	});
+
+	it("keeps session constraints and bookmark persistence when wrapped", () => {
+		const cookies = { get: vi.fn(), set: vi.fn() };
+		const scoped = createRequestScopedDb(
+			{ ...baseOpts, isAuthenticated: true, isWrite: true, cookies },
+			{ wrapDialect: (d) => d },
+		);
+		expect(mocks.binding.withSession).toHaveBeenCalledWith("first-primary");
+		scoped!.commit();
+		expect(cookies.set).toHaveBeenCalledWith(
+			"__em_d1_bookmark",
+			"d1-bookmark-1",
+			expect.objectContaining({ httpOnly: true }),
+		);
+	});
+
+	it("behaves as before when no extras are given", () => {
+		const scoped = createRequestScopedDb(baseOpts);
+		expect(scoped).not.toBeNull();
+	});
 });
